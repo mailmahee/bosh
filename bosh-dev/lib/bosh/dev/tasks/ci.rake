@@ -31,7 +31,7 @@ namespace :ci do
     require 'bosh/dev/build'
     require 'bosh/dev/bosh_release_publisher'
     build = Bosh::Dev::Build.candidate
-    BoshReleasePublisher.setup_for(build).publish
+    Bosh::Dev::BoshReleasePublisher.setup_for(build).publish
   end
 
   def build_light_stemcell(stemcell_filename)
