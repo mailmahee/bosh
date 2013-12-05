@@ -63,12 +63,15 @@ else
   exit 2
 fi
 
+# We need to set xen_blkfront.sda_is_xvda=1 to force CentOS to
+# have device mapping consistant with Ubuntu.
+# This settting should have no effect on Ubuntu.
 cat > ${image_mount_point}/boot/grub/grub.conf <<GRUB_CONF
 default=0
 timeout=1
 title ${os_name} (${kernel_version})
   root (hd0,0)
-  kernel /boot/vmlinuz-${kernel_version} ro root=UUID=${uuid} selinux=0
+  kernel /boot/vmlinuz-${kernel_version} xen_blkfront.sda_is_xvda=1 ro root=UUID=${uuid} selinux=0
   initrd /boot/${initrd_file}
 GRUB_CONF
 
