@@ -1,10 +1,10 @@
 require 'spec_helper'
 
 describe Bosh::Director::DeploymentPlan::Job do
-  subject(:job) { described_class.new(plan, spec) }
-
+  subject(:job)    { described_class.new(plan, spec) }
+  let(:plan)       { instance_double('Bosh::Director::DeploymentPlan::Planner', model: deployment) }
   let(:deployment) { Bosh::Director::Models::Deployment.make }
-  let(:plan) { double(Bosh::Director::DeploymentPlan, model: deployment) }
+
   let(:spec) do
     {
       'name' => 'foobar',
@@ -12,6 +12,24 @@ describe Bosh::Director::DeploymentPlan::Job do
       'release' => 'appcloud',
       'resource_pool' => 'dea'
     }
+  end
+
+  describe '#parse' do
+    it 'parses all the parts' do
+      [
+        :parse_name,
+        :parse_release,
+        :parse_template,
+        :parse_templates,
+        :parse_disk,
+        :parse_properties,
+        :parse_resource_pool,
+        :parse_update_config,
+        :parse_instances,
+        :parse_networks,
+      ].each { |m| expect(job).to receive(m).with(no_args).ordered }
+      job.parse
+    end
   end
 
   describe 'parsing job spec' do
@@ -69,6 +87,230 @@ describe Bosh::Director::DeploymentPlan::Job do
         job.parse_release
         job.parse_template
         expect(job.templates).to eq([foo_template, bar_template])
+      end
+    end
+
+    describe 'templates key' do
+      context 'when value is an array of hashes' do
+        context 'when one of the hashes specifies a release' do
+          before do
+            spec['templates'] = [{
+              'name' => 'fake-template-name',
+              'release' => 'fake-template-release',
+            }]
+          end
+
+          let(:template_rel_ver) { instance_double('Bosh::Director::DeploymentPlan::ReleaseVersion') }
+
+          context 'when job specifies a release' do
+            before { spec['release'] = 'fake-job-release' }
+
+            it 'uses release specified in a hash' do
+              expect(plan).to receive(:release)
+                .with('fake-template-release')
+                .and_return(template_rel_ver)
+
+              template = instance_double('Bosh::Director::DeploymentPlan::Template')
+              expect(template_rel_ver).to receive(:use_template_named)
+                .with('fake-template-name')
+                .and_return(template)
+
+              job.parse_templates
+              expect(job.templates).to eq([template])
+            end
+          end
+
+          context 'when job does not specify a release' do
+            before { spec.delete('release') }
+
+            it 'uses release specified in a hash' do
+              expect(plan).to receive(:release)
+                .with('fake-template-release')
+                .and_return(template_rel_ver)
+
+              template = instance_double('Bosh::Director::DeploymentPlan::Template')
+              expect(template_rel_ver).to receive(:use_template_named)
+                .with('fake-template-name')
+                .and_return(template)
+
+              job.parse_templates
+              expect(job.templates).to eq([template])
+            end
+          end
+        end
+
+        context 'when one of the hashes does not specify a release' do
+          before { spec['templates'] = [{'name' => 'fake-template-name'}] }
+          before { spec['release'] = 'fake-job-release' }
+
+          it 'uses release parsed earlier via parse_release' do
+            job_rel_ver = instance_double('Bosh::Director::DeploymentPlan::ReleaseVersion')
+            allow(plan).to receive(:release)
+              .with('fake-job-release')
+              .and_return(job_rel_ver)
+
+            job.parse_release
+
+            template = instance_double('Bosh::Director::DeploymentPlan::Template')
+            expect(job_rel_ver).to receive(:use_template_named)
+              .with('fake-template-name')
+              .and_return(template)
+
+            job.parse_templates
+            expect(job.templates).to eq([template])
+          end
+        end
+
+        context 'when one of the hashes specifies a release not specified in a deployment' do
+          before do
+            spec['templates'] = [{
+              'name' => 'fake-template-name',
+              'release' => 'fake-template-release',
+            }]
+          end
+
+          it 'raises an error because all referenced releases need to be specified under releases' do
+            spec['name'] = 'fake-job-name'
+            job.parse_name
+
+            expect(plan).to receive(:release)
+              .with('fake-template-release')
+              .and_return(nil)
+
+            expect {
+              job.parse_templates
+            }.to raise_error(
+              Bosh::Director::JobUnknownRelease,
+              "Template `fake-template-name' (job `fake-job-name') references an unknown release `fake-template-release'",
+            )
+          end
+        end
+
+        context 'when multiple hashes have the same name' do
+          before do
+            spec['templates'] = [
+              {'name' => 'fake-template-name1'},
+              {'name' => 'fake-template-name2'},
+              {'name' => 'fake-template-name1'},
+            ]
+          end
+
+          before do # resolve release and template objs
+            spec['release'] = 'fake-job-release'
+
+            job_rel_ver = instance_double('Bosh::Director::DeploymentPlan::ReleaseVersion')
+            allow(plan).to receive(:release)
+              .with('fake-job-release')
+              .and_return(job_rel_ver)
+
+            job.parse_release
+
+            allow(job_rel_ver).to receive(:use_template_named) do |name|
+              instance_double('Bosh::Director::DeploymentPlan::Template', name: name)
+            end
+          end
+
+          it 'raises an error because job dirs on a VM will become ambiguous' do
+            spec['name'] = 'fake-job-name'
+            job.parse_name
+
+            expect {
+              job.parse_templates
+            }.to raise_error(
+              Bosh::Director::JobInvalidTemplates,
+              "Job `fake-job-name' templates must not have repeating names."
+            )
+          end
+        end
+
+        context 'when multiple hashes reference different releases' do
+          before do
+            spec['templates'] = [
+              {'name' => 'fake-template-name1', 'release' => 'fake-template-release1'},
+              {'name' => 'fake-template-name2', 'release' => 'fake-template-release2'},
+            ]
+          end
+
+          before do # resolve first release and template obj
+            rel_ver1 = instance_double('Bosh::Director::DeploymentPlan::ReleaseVersion')
+            allow(plan).to receive(:release)
+              .with('fake-template-release1')
+              .and_return(rel_ver1)
+
+            template1 = instance_double(
+              'Bosh::Director::DeploymentPlan::Template',
+              name: 'fake-template-name1',
+              release: rel_ver1,
+            )
+            allow(rel_ver1).to receive(:use_template_named)
+              .with('fake-template-name1')
+              .and_return(template1)
+          end
+
+          before do # resolve second release and template obj
+            rel_ver2 = instance_double('Bosh::Director::DeploymentPlan::ReleaseVersion')
+            allow(plan).to receive(:release)
+              .with('fake-template-release2')
+              .and_return(rel_ver2)
+
+            template2 = instance_double(
+              'Bosh::Director::DeploymentPlan::Template',
+              name: 'fake-template-name2',
+              release: rel_ver2,
+            )
+            allow(rel_ver2).to receive(:use_template_named)
+              .with('fake-template-name2')
+              .and_return(template2)
+          end
+
+          it 'raises an error because currently multi-release collocation is not supported' do
+            spec['name'] = 'fake-job-name'
+            job.parse_name
+
+            expect {
+              job.parse_templates
+            }.to raise_error(
+              Bosh::Director::JobInvalidTemplates,
+              "Job `fake-job-name' templates must come from the same release."
+            )
+          end
+        end
+
+        context 'when one of the hashes is missing a name' do
+          it 'raises an error because that is how template will be found' do
+            spec['templates'] = [{}]
+            expect {
+              job.parse_templates
+            }.to raise_error(
+              Bosh::Director::ValidationMissingField,
+              %{Required property `name' was not specified in object ({})},
+            )
+          end
+        end
+
+        context 'when one of the elements is not a hash' do
+          it 'raises an error' do
+            spec['templates'] = ['not-a-hash']
+            expect {
+              job.parse_templates
+            }.to raise_error(
+              Bosh::Director::ValidationInvalidType,
+              %{Object ("not-a-hash") did not match the required type `Hash'},
+            )
+          end
+        end
+      end
+
+      context 'when value is not an array' do
+        it 'raises an error' do
+          spec['templates'] = 'not-an-array'
+          expect {
+            job.parse_templates
+          }.to raise_error(
+            Bosh::Director::ValidationInvalidType,
+            %{Property `templates' (value "not-an-array") did not match the required type `Array'},
+          )
+        end
       end
     end
 

@@ -95,6 +95,7 @@ module Bosh::Director
         parse_name
         parse_release
         parse_template
+        parse_templates
         parse_disk
         parse_properties
         parse_resource_pool
@@ -254,6 +255,33 @@ module Bosh::Director
         template_names.each do |template_name|
           @release.use_template_named(template_name)
           @templates << @release.template(template_name)
+        end
+      end
+
+      def parse_templates
+        templates = safe_property(@job_spec, 'templates', class: Array)
+
+        templates.each do |template|
+          template_name = safe_property(template, 'name', class: String)
+          release_name = safe_property(template, 'release', class: String, optional: true)
+
+          release = release_name ? @deployment.release(release_name) : @release
+          if release
+            @templates << release.use_template_named(template_name)
+          else
+            raise JobUnknownRelease,
+                  "Template `#{template_name}' (job `#{@name}') references an unknown release `#{release_name}'"
+          end
+        end
+
+        if @templates.uniq(&:name).size != @templates.size
+          raise JobInvalidTemplates,
+                "Job `#{@name}' templates must not have repeating names."
+        end
+
+        if @templates.uniq(&:release).size != 1
+          raise JobInvalidTemplates,
+                "Job `#{@name}' templates must come from the same release."
         end
       end
 
