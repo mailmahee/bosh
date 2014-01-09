@@ -51,6 +51,9 @@ module Bosh::Director
       # @return [DeploymentPlan::UpdateConfig] Job update settings
       attr_accessor :update
 
+      # @return [Array<DeploymentPlan::Instance>] All job instances
+      attr_accessor :instances
+
       # @return [Array<Models::Instance>] List of excess instance models that
       #   are not needed for current deployment
       attr_accessor :unneeded_instances
@@ -64,6 +67,8 @@ module Bosh::Director
       # @return [Exception] Exception that requires job update process to be
       #   interrupted
       attr_accessor :halt_exception
+
+      attr_accessor :all_properties
 
       # @param [Bosh::Director::DeploymentPlan] deployment Deployment plan
       # @param [Hash] job_spec Raw job spec from the deployment manifest
@@ -85,10 +90,13 @@ module Bosh::Director
         @all_properties = nil # All properties available to job
         @properties = nil # Actual job properties
 
+        @instances = []
+        @unneeded_instances = []
+        @instance_states = {}
+
         @error_mutex = Mutex.new
         @packages = {}
         @halt = false
-        @unneeded_instances = []
       end
 
       def parse
@@ -174,12 +182,6 @@ module Bosh::Director
         result.select { |name, _| run_time_dependencies.include? name }
       end
 
-      # Returns all instances of this job
-      # @return [Array<DeploymentPlan::Instance>] All job instances
-      def instances
-        @instances
-      end
-
       # Returns job instance by index
       # @param [Integer] index
       # @return [DeploymentPlan::Instance] index-th instance
@@ -211,82 +213,6 @@ module Bosh::Director
           @halt = true
           @halt_exception = error
         end
-      end
-
-      def parse_name
-        @name = safe_property(@job_spec, "name", :class => String)
-        @canonical_name = canonical(@name)
-      end
-
-      def parse_release
-        release_name = safe_property(@job_spec, "release", :class => String, :optional => true)
-
-        if release_name.nil?
-          if @deployment.releases.size == 1
-            @release = @deployment.releases.first
-          else
-            raise JobMissingRelease,
-                  "Cannot tell what release job `#{@name}' supposed to use, please reference an existing release"
-          end
-        else
-          @release = @deployment.release(release_name)
-        end
-
-        if @release.nil?
-          raise JobUnknownRelease,
-                "Job `#{@name}' references an unknown release `#{release_name}'"
-        end
-      end
-
-      def parse_template
-        if @release.nil?
-          raise DirectorError, "Cannot parse template before parsing release"
-        end
-
-        template_names = safe_property(@job_spec, "template")
-        if template_names.is_a?(String)
-          template_names = Array(template_names)
-        end
-
-        unless template_names.is_a?(Array)
-          invalid_type("template", "String or Array", template_names)
-        end
-
-        template_names.each do |template_name|
-          @release.use_template_named(template_name)
-          @templates << @release.template(template_name)
-        end
-      end
-
-      def parse_templates
-        templates = safe_property(@job_spec, 'templates', class: Array)
-
-        templates.each do |template|
-          template_name = safe_property(template, 'name', class: String)
-          release_name = safe_property(template, 'release', class: String, optional: true)
-
-          release = release_name ? @deployment.release(release_name) : @release
-          if release
-            @templates << release.use_template_named(template_name)
-          else
-            raise JobUnknownRelease,
-                  "Template `#{template_name}' (job `#{@name}') references an unknown release `#{release_name}'"
-          end
-        end
-
-        if @templates.uniq(&:name).size != @templates.size
-          raise JobInvalidTemplates,
-                "Job `#{@name}' templates must not have repeating names."
-        end
-
-        if @templates.uniq(&:release).size != 1
-          raise JobInvalidTemplates,
-                "Job `#{@name}' templates must come from the same release."
-        end
-      end
-
-      def parse_disk
-        @persistent_disk = safe_property(@job_spec, "persistent_disk", :class => Integer, :default => 0)
       end
 
       def parse_properties
